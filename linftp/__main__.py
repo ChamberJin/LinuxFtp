@@ -17,9 +17,12 @@ def setup_logging(verbose: bool) -> None:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="linftp", description="Linux FTP 客户端")
     parser.add_argument("--host", help="启动后直接连接的主机")
-    parser.add_argument("--port", type=int, help="端口，默认 21")
+    parser.add_argument("--protocol", default="ftp", choices=["ftp", "sftp"],
+                        help="协议：ftp（默认）或 sftp")
+    parser.add_argument("--port", type=int, help="端口，默认按协议取 21 / 22")
     parser.add_argument("--user", default="anonymous", help="用户名")
     parser.add_argument("--password", default="", help="密码")
+    parser.add_argument("--keyfile", default="", help="SFTP 私钥文件（可替代密码）")
     parser.add_argument("--local", help="本地栏初始目录")
     parser.add_argument("--no-start", action="store_true",
                         help="跳过启动页，直接进主窗口")
@@ -57,11 +60,12 @@ def main(argv=None) -> int:
     auto_connect = bool(args.host)
     if auto_connect:
         cfg = SessionConfig(
-            protocol="ftp",
+            protocol=args.protocol,
             host=args.host,
             port=args.port or None,
             username=args.user,
             password=args.password,
+            keyfile=args.keyfile,
         )
 
     # 入口分三种情况：

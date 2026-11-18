@@ -19,10 +19,18 @@ __all__ = [
 
 
 def create_session(cfg: SessionConfig) -> FtpSession:
-    """协议工厂。P0 只实现 FTP；后续接入 ftps / sftp / scp 时在这里加分支。"""
+    """协议工厂。已实现 ftp / sftp；ftps / scp 在后续阶段接入。"""
     proto = (cfg.protocol or "ftp").lower()
     if proto == "ftp":
         from .ftp import FtpBackend
 
         return FtpBackend(cfg)
-    raise NotImplementedError(f"协议 {proto} 将在后续阶段实现")
+    if proto == "sftp":
+        try:
+            from .sftp import SftpBackend
+        except ImportError as e:      # 没装 paramiko
+            raise SessionError(
+                "SFTP 需要 paramiko，请先执行 pip install paramiko") from e
+
+        return SftpBackend(cfg)
+    raise SessionError(f"暂不支持协议 {proto}（可用：ftp、sftp）")

@@ -923,7 +923,15 @@ class MainWindow(QMainWindow):
             self.encoding_box.setEnabled(False)
             self.encoding_box.setCurrentIndex(0)
             return
+        if getattr(self.session, "protocol", "ftp") != "ftp":
+            # SFTP 的文件名固定 UTF-8，切换编码没有意义
+            self.encoding_box.setEnabled(False)
+            self.encoding_box.setCurrentIndex(1)
+            self.encoding_box.setToolTip("SFTP 的文件名固定 UTF-8，无需选择编码")
+            return
         self.encoding_box.setEnabled(True)
+        self.encoding_box.setToolTip(
+            "服务端文件名编码。默认自动识别；出现中文乱码时可手动指定后刷新")
         enc = getattr(self.session, "effective_encoding", "") or ""
         auto = getattr(self.session, "encoding_autodetected", False)
         if auto:

@@ -1,12 +1,15 @@
 """连接对话框：填写主机、账号、协议，测试并保存站点。"""
 from __future__ import annotations
 
+import os
+
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -52,8 +55,10 @@ class ConnectDialog(QDialog):
         self._probe: _ProbeThread | None = None
 
         self.protocol = QComboBox()
-        self.protocol.addItems(["ftp"])
-        self.protocol.setToolTip("P0 阶段仅支持 FTP，SFTP / SCP / FTPS 将在后续接入")
+        self.protocol.addItems(["ftp", "sftp"])
+        self.protocol.setToolTip("ftp 默认 21 端口；sftp 默认 22 端口，支持密码或私钥")
+        self._proto_default = 21      # 当前协议对应的默认端口，用于切换时跟随
+        self.protocol.currentTextChanged.connect(self._on_protocol_changed)
 
         self.host = QLineEdit()
         self.host.setPlaceholderText("192.0.2.10 或 ftp.example.com")
@@ -74,6 +79,20 @@ class ConnectDialog(QDialog):
         self.encoding = QComboBox()
         self.encoding.addItems(["utf-8", "gbk", "big5", "latin-1"])
 
+        # 私钥认证（仅 SFTP）：可留空走密码 / ssh-agent
+        self.keyfile = QLineEdit()
+        self.keyfile.setPlaceholderText("可留空；密码登录时不填")
+        self.keyfile.setToolTip("OpenSSH 私钥文件，如 ~/.ssh/id_ed25519")
+        btn_key = QPushButton("浏览…")
+        btn_key.setMinimumWidth(64)
+        btn_key.clicked.connect(self._pick_keyfile)
+        self._key_row = QWidget()
+        key_layout = QHBoxLayout(self._key_row)
+        key_layout.setContentsMargins(0, 0, 0, 0)
+        key_layout.setSpacing(6)
+        key_layout.addWidget(self.keyfile, 1)
+        key_layout.addWidget(btn_key)
+
         self.timeout = QSpinBox()
         self.timeout.setRange(3, 120)
         self.timeout.setValue(15)
@@ -81,7 +100,8 @@ class ConnectDialog(QDialog):
 
         self.remember = QCheckBox("保存为站点")
 
-        form = QFormLayout()
+        self._form = QFormLayout()
+        form = self._form
         form.setContentsMargins(0, 0, 0, 0)
         form.setSpacing(9)
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -90,10 +110,12 @@ class ConnectDialog(QDialog):
         form.addRow("端口", self.port)
         form.addRow("用户名", self.username)
         form.addRow("密码", self.password)
+        form.addRow("私钥文件", self._key_row)
         form.addRow("", self.passive)
         form.addRow("文件名编码", self.encoding)
         form.addRow("超时", self.timeout)
         form.addRow("", self.remember)
+        self._sync_proto_fields(self.protocol.currentText())
 
         self.status = QLabel("")
         self.status.setWordWrap(True)
@@ -151,14 +173,44 @@ class ConnectDialog(QDialog):
             self.apply(cfg)
         theme.inherit_app_font(self)
 
+    # ------------------------------------------------------------ 协议联动
+    def _on_protocol_changed(self, proto: str) -> None:
+        default = 22 if proto in ("sftp", "scp") else 21
+        # 只有端口还是"上一个协议的默认值"时才跟着换，用户手填的端口不覆盖
+        if self.port.value() in (0, self._proto_default):
+            self.port.setValue(default)
+        self._proto_default = default
+        # 默认用户名跟着协议走；用户改过就尊重用户
+        current = self.username.text().strip()
+        if proto == "sftp" and current in ("", "anonymous"):
+            self.username.setText("root")
+        elif proto == "ftp" and current == "root":
+            self.username.setText("anonymous")
+        self._sync_proto_fields(proto)
+
+    def _sync_proto_fields(self, proto: str) -> None:
+        is_ftp = proto == "ftp"
+        # SFTP 没有被动模式，文件名也固定 UTF-8，这两行藏起来更省心
+        self._form.setRowVisible(self.passive, is_ftp)
+        self._form.setRowVisible(self.encoding, is_ftp)
+        self._form.setRowVisible(self._key_row, proto == "sftp")
+
+    def _pick_keyfile(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择私钥文件", os.path.expanduser("~/.ssh"),
+            "所有文件 (*)")
+        if path:
+            self.keyfile.setText(path)
+
     def apply(self, cfg: SessionConfig) -> None:
         idx = self.protocol.findText(cfg.protocol)
         if idx >= 0:
-            self.protocol.setCurrentIndex(idx)
+            self.protocol.setCurrentIndex(idx)   # 会触发协议联动
         self.host.setText(cfg.host)
-        self.port.setValue(cfg.port or 0)
+        self.port.setValue(cfg.port or 0)        # 显式端口放在联动之后覆盖
         self.username.setText(cfg.username)
         self.password.setText(cfg.password)
+        self.keyfile.setText(cfg.keyfile)
         self.passive.setChecked(cfg.passive)
         e = self.encoding.findText(cfg.encoding)
         if e >= 0:
@@ -172,6 +224,7 @@ class ConnectDialog(QDialog):
             port=self.port.value() or None,
             username=self.username.text().strip() or "anonymous",
             password=self.password.text(),
+            keyfile=self.keyfile.text().strip(),
             passive=self.passive.isChecked(),
             encoding=self.encoding.currentText(),
             timeout=self.timeout.value(),

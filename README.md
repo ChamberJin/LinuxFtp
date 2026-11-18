@@ -26,7 +26,8 @@ Linux 上的 WinSCP 功能复刻。**P0 阶段：FTP 协议 + 可运行框架**�
 | 文件名过滤（通配符） | 完成 |
 | 日志面板、连接保活 | 完成 |
 | **文件名编码自动识别（GBK/UTF-8/Big5）** | 完成 |
-| FTPS / SFTP / SCP | **待 P4** |
+| **SFTP（密码 / 私钥、续传、chmod）** | 完成 |
+| FTPS / SCP | **待 P4** |
 
 ## 快速开始
 
@@ -41,6 +42,7 @@ TMPDIR=$PWD/.tmp .venv/bin/pip install -r requirements.txt
 ./run.sh --no-start          # 跳过启动页，直接进主窗口
 ./run.sh --host ftp.example.com --user bob --password yourpass --port 21
 ./run.sh --local /var/www    # 指定本地栏初始目录
+./run.sh --protocol sftp --host 192.0.2.10 --user deploy --keyfile ~/.ssh/id_ed25519
 ```
 
 > 注意：部分发行版 `/tmp` 只有 10MB，pip 解包会报"设备上没有空间"。
@@ -128,9 +130,12 @@ bash tools/install_icon.sh
 
 # 路径栏层级点击测试
 .venv/bin/python tools/test_pathbar.py
+
+# SFTP 后端测试（自带内嵌 SFTP 服务，不用另起服务）
+.venv/bin/python tools/test_sftp.py
 ```
 
-当前结果：**协议层 17 + 编码 12 + 书签 5 组 + 启动页 5 + 紧凑模式 9 + 多屏摆位 7 + 窗口记忆 6 + 复制路径 13 + 路径栏 14，全部通过（88 项）**。
+当前结果：**协议层 17 + 编码 12 + 书签 5 组 + 启动页 5 + 紧凑模式 9 + 多屏摆位 7 + 窗口记忆 6 + 复制路径 13 + 路径栏 14 + SFTP 13，全部通过（101 项）**。
 
 > `test_backend.py` / `test_encoding.py` / `test_bookmarks.py` 需要本地 FTP 服务
 > （2121、2122 两个端口）；测试服务脚本不随仓库分发，请自备。
@@ -144,6 +149,7 @@ linftp/
 ├── backend/
 │   ├── base.py          统一会话抽象 FtpSession（四种协议共用接口）
 │   ├── ftp.py           FTP 实现（MLSD / LIST / REST / SITE CHMOD）
+│   ├── sftp.py          SFTP 实现（paramiko：私钥认证 / 续传 / chmod）
 │   └── __init__.py      协议工厂 create_session()
 ├── localfs.py           本地栏文件系统（与远端接口对齐）
 ├── models.py            双栏共用表格模型
@@ -165,7 +171,8 @@ tools/
 ├── test_screen.py       多屏摆位测试（7 项，双屏时含端到端同屏校验）
 ├── test_window_state.py 窗口大小/位置记忆测试（6 项）
 ├── test_copy_path.py    右键复制路径测试（13 项）
-└── test_pathbar.py      路径栏层级点击测试（14 项）
+├── test_pathbar.py      路径栏层级点击测试（14 项）
+└── test_sftp.py         SFTP 后端测试（13 项，内嵌测试服务）
 assets/
 ├── linftp-icon.svg      应用图标源文件（矢量，可任意缩放）
 └── preview-256.png      图标预览图
@@ -376,6 +383,41 @@ QSS 也由 `qss(metrics)` 生成。切换时：
 > 为什么不做成面包屑按钮串：`/项目文档/BUILD7.0/终版归档/子目录/…` 这种长路径
 > 在双栏布局里会挤爆面板宽度，还得自己做折叠；输入框天生会裁剪，长路径也不难看。
 
+## SFTP
+
+连接对话框里把「协议」切成 `sftp`，端口自动从 21 变 22（手填过端口就不会被覆盖），
+「被动模式」和「文件名编码」两行会隐藏 —— SFTP 没有这两个概念。
+
+| 认证方式 | 填法 |
+|---|---|
+| 密码 | 用户名 + 密码，「私钥文件」留空 |
+| 私钥 | 「私钥文件」选 `~/.ssh/id_ed25519`（OpenSSH / PEM 都行），密码可留空 |
+
+几个行为：
+
+- **默认用户名跟着协议走**：切到 sftp 时若还是 `anonymous` 会自动变 `root`；
+  手动改过就不再动它。
+- **主机密钥**：优先信任 `~/.ssh/known_hosts` 里已有的记录；第一次连某台机器时
+  自动信任，`SHA256:` 指纹记在会话对象的 `host_key_fingerprint` 上，需要严格
+  校验时可以连上后核对。
+- **编码**：文件名固定 UTF-8，工具栏的编码下拉框会置灰。
+- **续传**：用文件句柄 seek 实现，不依赖服务端 `REST`；上传续传时若远端文件已被
+  删掉，会自动退回整传。
+- **chmod 直接可用**，不像 FTP 那样要看服务端是否支持 `SITE CHMOD`。
+- **私钥格式**：PEM 与 OpenSSH 都能读；带口令的私钥暂不支持在界面里输入口令
+  （可以先 `ssh-add` 到 ssh-agent，界面留空私钥走 agent）；PuTTY 的 `.ppk`
+  需要先 `ssh-keygen -i` 转成 OpenSSH 格式。
+
+命令行等价写法：
+
+```bash
+./run.sh --protocol sftp --host 192.0.2.10 --user deploy --keyfile ~/.ssh/id_ed25519
+./run.sh --protocol sftp --host 192.0.2.10 --user deploy --password '...' --port 2222
+```
+
+> SFTP 依赖 `paramiko`（已写进 `requirements.txt`）。其余功能与 FTP 完全一致：
+> 双栏浏览、传输队列、书签、启动页、右键复制路径、路径栏跳转都能直接用。
+
 ## 书签
 
 工具栏「书签」按钮直接下拉，点任意一条即跳到对应目录。
@@ -439,8 +481,9 @@ FTP 是严格一问一答的协议，**任何一次传输中途失败都必须�
 ## 关键设计
 
 **统一接口，协议可插拔。** `backend/base.py` 定义 `FtpSession`，
-上层 UI 和队列只依赖它。接入 SFTP/SCP/FTPS 时只需在
-`backend/__init__.py` 的工厂里加分支，UI 一行不用改。
+上层 UI 和队列只依赖它。接 SFTP 时只新增了 `backend/sftp.py`
+并在工厂里加了一个分支，UI 侧仅补了协议下拉和两行显隐 ——
+抽象层省掉的正是这部分重复。
 
 **传输全部在后台线程。** 每条任务独立建连（FTP 控制连接非线程安全，
 共享会串包），任务状态通过回调推给 UI，主线程只渲染。
@@ -478,6 +521,6 @@ FTP 是严格一问一答的协议，**任何一次传输中途失败都必须�
 
 - **P2 收尾**：覆盖策略（询问/覆盖/跳过/重命名）、传输限速
 - **P3 体验**：拖拽传输、双击本地文件用外部程序编辑并回写、侧栏目录树
-- **P4 协议**：FTPS（显式 AUTH TLS + 隐式 990）、SFTP（paramiko）、SCP
+- **P4 协议**：FTPS（显式 AUTH TLS + 隐式 990）、SCP（SFTP 已完成）
 - **P5 自动化**：同步/镜像目录、命令行批处理
 - **P6 打包**：PyInstaller → AppImage / deb
