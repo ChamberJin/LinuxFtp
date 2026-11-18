@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#5B90F8"/>
+      <stop offset="0.48" stop-color="#2F6FED"/>
+      <stop offset="1" stop-color="#1A45B8"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.30"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0.15" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EDF2FB"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="6" stdDeviation="7" flood-color="#08203F" flood-opacity="0.26"/>
+    </filter>
+    <filter id="badge" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0A2A5C" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <!-- 底板 -->
+  <rect x="12" y="12" width="232" height="232" rx="48" fill="url(#plate)"/>
+  <rect x="12" y="12" width="232" height="232" rx="48" fill="url(#sheen)"/>
+
+  <!-- 两块面板 -->
+  <g filter="url(#soft)">
+    <rect x="30" y="54" width="84" height="148" rx="18" fill="url(#panel)"/>
+    <rect x="142" y="54" width="84" height="148" rx="18" fill="url(#panel)"/>
+  </g>
+
+  <!-- 左栏标题条（本地=绿）：上圆角、下直角，直接铺到面板里 -->
+  <path d="M30 72 a18 18 0 0 1 18-18 h48 a18 18 0 0 1 18 18 v18 H30 Z" fill="#0F7A63"/>
+  <!-- 右栏标题条（远端=蓝） -->
+  <path d="M142 72 a18 18 0 0 1 18-18 h48 a18 18 0 0 1 18 18 v18 h-84 Z" fill="#3D7BF5"/>
+
+  <!-- 条目条形 -->
+  <g fill="#8496AE">
+    <rect x="44" y="114" width="54" height="10" rx="5"/>
+    <rect x="44" y="144" width="40" height="10" rx="5"/>
+    <rect x="44" y="174" width="48" height="10" rx="5"/>
+  </g>
+  <g fill="#8496AE">
+    <rect x="158" y="114" width="48" height="10" rx="5"/>
+    <rect x="158" y="144" width="54" height="10" rx="5"/>
+    <rect x="158" y="174" width="36" height="10" rx="5"/>
+  </g>
+
+  <!-- 中心传送徽标 -->
+  <g filter="url(#badge)">
+    <rect x="95" y="78" width="66" height="100" rx="33" fill="#FFFFFF"/>
+  </g>
+  <g stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M113 105 H147" stroke="#2F6FED" stroke-width="12"/>
+    <path d="M136 90 L153 105 L136 120" stroke="#2F6FED" stroke-width="12"/>
+    <path d="M143 151 H109" stroke="#0F7A63" stroke-width="12"/>
+    <path d="M120 136 L103 151 L120 166" stroke="#0F7A63" stroke-width="12"/>
+  </g>
+</svg>

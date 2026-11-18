@@ -1,0 +1,22 @@
+# 虚拟环境与临时目录
+.venv/
+.tmp/
+__pycache__/
+*.pyc
+*.pyo
+
+# 本地运行时状态：书签里可能带加密口令、界面偏好、最近连接
+*.local.json
+ui.json
+bookmarks.json
+sites.json
+
+# 开发过程截图（可能含真实主机名 / 内网路径）
+.preview/
+
+# 文件管理器删除残留、WorkBuddy 工作区数据（含内网地址与业务信息）
+.Trash-0/
+.workbuddy/
+
+# 本地测试用 FTP 服务不随仓库分发（含本地测试账号）
+tools/testserver.py
