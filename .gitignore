@@ -18,5 +18,6 @@ sites.json
 .Trash-0/
 .workbuddy/
 
-# 本地测试用 FTP 服务不随仓库分发（含本地测试账号）
+# 本地测试用 FTP/SFTP 服务不随仓库分发（含本地测试账号）
 tools/testserver.py
+tools/test_sftp.py
