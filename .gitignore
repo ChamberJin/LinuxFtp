@@ -21,3 +21,8 @@ sites.json
 # 本地测试用 FTP/SFTP 服务不随仓库分发（含本地测试账号）
 tools/testserver.py
 tools/test_sftp.py
+
+# 打包产物与中间文件
+build/
+dist/
+*.spec
