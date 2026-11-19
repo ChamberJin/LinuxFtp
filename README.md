@@ -31,6 +31,7 @@ Linux 上的 WinSCP 功能复刻。**P0 阶段：FTP 协议 + 可运行框架**�
 | **文件名编码自动识别（GBK/UTF-8/Big5）** | 完成 |
 | **SFTP（密码 / 私钥、续传、chmod）** | 完成 |
 | **常驻托盘（关窗口不退出，可从托盘打开）** | 完成 |
+| **打包为可执行文件（PyInstaller 目录模式）** | 完成 |
 | FTPS / SCP | **待 P4** |
 
 ## 快速开始
@@ -51,6 +52,28 @@ TMPDIR=$PWD/.tmp .venv/bin/pip install -r requirements.txt
 
 > 注意：部分发行版 `/tmp` 只有 10MB，pip 解包会报"设备上没有空间"。
 > 本工程统一用 `TMPDIR=$PWD/.tmp` 规避，`run.sh` 已内置该设置。
+
+## 打包为可执行文件
+
+不想装 Python 环境的话，一条命令打出独立可执行文件：
+
+```bash
+.venv/bin/pip install pyinstaller   # 首次
+./build.sh
+```
+
+产物在 `dist/LinFTP/`，主程序是里面的 `LinFTP` 可执行文件，
+整个目录拷到其他机器（无需 Python）也能跑，命令行参数与 `run.sh` 一致。
+
+| 设计点 | 说明 |
+|---|---|
+| 目录模式而非单文件 | onefile 运行时要把上百 MB 解压到 `/tmp`，在小 `/tmp` 机器上必然失败（本工程专门处理过的坑）；目录模式直接加载、不碰 `/tmp`，启动更快 |
+| 产物瘦身 | `build.sh` 内置两步：`strip` 掉 libpython 等库的调试符号（本机托管 Python 自带符号可达 200M+）+ 剔除 Qml/Quick/VirtualKeyboard/Pdf 等纯 Widgets 应用用不到的 Qt 库，423M → 约 193M |
+| 资源文件 | `assets/` 由 `--add-data` 带进包内，`theme.py` 按 `__file__` 相对路径取图标，PyInstaller 解包目录下同样成立 |
+| 排除大模块 | WebEngine / Qml / Quick / 多媒体 / Sql / tkinter 等在打包参数里显式排除 |
+
+> 单文件模式想要的话把 `--onedir` 换成 `--onefile` 即可，但在 `/tmp`
+> 很小的机器上运行时会解压失败，需配合 `TMPDIR` 指到空间足够的目录。
 
 ## 图标与桌面入口
 
@@ -138,7 +161,8 @@ bash tools/install_icon.sh
 # 路径栏层级点击测试
 .venv/bin/python tools/test_pathbar.py
 
-# SFTP 后端测试（自带内嵌 SFTP 服务，不用另起服务）
+# SFTP 后端测试（内嵌 SFTP 服务，不用另起服务）
+# 注意：脚本不随仓库分发（与 testserver.py 同一套本地测试账号），请自备
 .venv/bin/python tools/test_sftp.py
 
 # 列表排序测试
@@ -154,12 +178,14 @@ bash tools/install_icon.sh
 当前结果：**协议层 17 + 编码 12 + 书签 5 组 + 启动页 5 + 紧凑模式 9 + 多屏摆位 7 + 窗口记忆 6 + 复制路径 13 + 路径栏 14 + SFTP 13 + 排序 12 + 预览 18 + 托盘 14 + 右键导航 11，全部通过（156 项）**。
 
 > `test_backend.py` / `test_encoding.py` / `test_bookmarks.py` 需要本地 FTP 服务
-> （2121、2122 两个端口）；测试服务脚本不随仓库分发，请自备。
-> 没起服务会直接 `Connection refused`。
+> （2121、2122 两个端口）；`test_sftp.py` 自带内嵌服务。
+> 这些测试脚本均不随仓库分发，请自备；没起服务会直接 `Connection refused`。
 
 ## 目录结构
 
 ```
+main.py                PyInstaller 打包入口（等价 python -m linftp）
+build.sh               一键打包脚本（PyInstaller 目录模式 + 产物瘦身）
 linftp/
 ├── __main__.py          程序入口，命令行参数
 ├── backend/
@@ -191,7 +217,7 @@ tools/
 ├── test_copy_path.py    右键复制路径测试（13 项）
 ├── test_context_menu.py 右键导航菜单测试（11 项）
 ├── test_pathbar.py      路径栏层级点击测试（14 项）
-├── test_sftp.py         SFTP 后端测试（13 项，内嵌测试服务）
+├── test_sftp.py         SFTP 后端测试（13 项，内嵌测试服务；不随仓库分发）
 ├── test_sort.py         列表排序测试（12 项）
 ├── test_preview.py      文本预览测试（18 项）
 └── test_tray.py         托盘常驻 / 关闭动作测试（14 项）
@@ -199,6 +225,7 @@ assets/
 ├── linftp-icon.svg      应用图标源文件（矢量，可任意缩放）
 └── preview-256.png      图标预览图
 tools/install_icon.sh    生成整套尺寸图标 + 装桌面入口
+dist/LinFTP/             build.sh 打包产物（主程序 LinFTP + _internal 运行库）
 ```
 
 ## 启动页
@@ -660,4 +687,4 @@ FTP 是严格一问一答的协议，**任何一次传输中途失败都必须�
 - **P3 体验**：拖拽传输、双击本地文件用外部程序编辑并回写、侧栏目录树
 - **P4 协议**：FTPS（显式 AUTH TLS + 隐式 990）、SCP（SFTP 已完成）
 - **P5 自动化**：同步/镜像目录、命令行批处理
-- **P6 打包**：PyInstaller → AppImage / deb
+- **P6 打包**：PyInstaller 目录模式已完成（`./build.sh`）；余下 AppImage / deb
