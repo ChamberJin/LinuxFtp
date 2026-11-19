@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 
 from PySide6.QtCore import (
     QItemSelectionModel,
@@ -29,7 +30,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QFileDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -39,7 +39,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QSplitter,
     QTableView,
@@ -731,9 +730,11 @@ class MainWindow(QMainWindow):
                 lambda path, p=pane: self.navigate_to(p, path))
 
         self.local_pane.btn_up.clicked.connect(lambda: self._go_up(self.local_pane))
-        self.local_pane.btn_home.clicked.connect(self._go_home_local)
+        self.local_pane.btn_home.clicked.connect(
+            lambda: self._go_home(self.local_pane))
         self.remote_pane.btn_up.clicked.connect(lambda: self._go_up(self.remote_pane))
-        self.remote_pane.btn_home.clicked.connect(lambda: self.go_remote("/"))
+        self.remote_pane.btn_home.clicked.connect(
+            lambda: self._go_home(self.remote_pane))
 
         # 两侧各包一层卡片，视觉上明确分区
         left_card = Card()
@@ -1136,14 +1137,35 @@ class MainWindow(QMainWindow):
             self.go_remote(path)
 
     def _go_up(self, pane: FilePane) -> None:
+        if not self._can_go_up(pane):
+            return
         if pane is self.local_pane:
             self.go_local(self.local_fs.parent(self.local_path))
         else:
             parent = self.remote_path.rstrip("/").rpartition("/")[0] or "/"
             self.go_remote(parent)
 
-    def _go_home_local(self) -> None:
-        self.go_local(os.path.expanduser("~"))
+    def _can_go_up(self, pane: FilePane) -> bool:
+        """根目录再往上还是根目录，点了没反应反而像坏了，直接禁用。"""
+        if pane is self.local_pane:
+            return self.local_fs.parent(self.local_path) != self.local_path
+        if self.session is None:
+            return False
+        return self.remote_path not in ("", "/")
+
+    def _go_home(self, pane: FilePane) -> None:
+        """主目录：本地是 ~，远端是 /。"""
+        if pane is self.local_pane:
+            self.go_local(os.path.expanduser("~"))
+        elif self.session:
+            self.go_remote("/")
+
+    def _refresh_pane(self, pane: FilePane) -> None:
+        """只刷右键点的那一侧；工具栏的「刷新」是两侧都刷。"""
+        if pane is self.local_pane:
+            self.refresh_local()
+        elif self.session:
+            self.go_remote(self.remote_path)
 
     # ------------------------------------------------------------ 传输
     def on_upload(self) -> None:
@@ -1442,65 +1464,100 @@ class MainWindow(QMainWindow):
             return "复制路径"
         return f"复制 {len(paths)} 项路径"
 
-    def _on_context_menu(self, pane: FilePane, pos) -> None:
+    def build_context_menu(self, pane: FilePane, pos) -> QMenu:
+        """搭出列表右键菜单（不 exec，方便单测和截图）。
+
+        动作一律在构造时连好，_on_context_menu 只负责弹出来，
+        省掉 exec 之后一串 `chosen is act_x` 的比对。
+        """
         menu = QMenu(self)
         side = "local" if pane is self.local_pane else "remote"
+        # 本地面板永远可用；远端的操作要等连上
+        connected = pane is self.local_pane or self.session is not None
+        icon_size = 16
 
+        # ------ 导航组：与面板顶部的小按钮、工具栏「刷新」同源。
+        # 放在最前面是因为它不挑落点，右键点在空白处照样能用。
+        act_up = menu.addAction(
+            theme.icon("up", Palette.TEXT_MUTED, icon_size), "上级目录")
+        act_up.setEnabled(self._can_go_up(pane))
+        act_up.triggered.connect(lambda: self._go_up(pane))
+
+        act_home = menu.addAction(
+            theme.icon("home", Palette.TEXT_MUTED, icon_size), "主目录")
+        act_home.setEnabled(connected)
+        act_home.triggered.connect(lambda: self._go_home(pane))
+
+        act_refresh = menu.addAction(
+            theme.icon("refresh", Palette.TEXT_MUTED, icon_size), "刷新")
+        act_refresh.setEnabled(connected)
+        act_refresh.triggered.connect(lambda: self._refresh_pane(pane))
+        menu.addSeparator()
+
+        # ------ 针对落点那一项（或当前目录）的操作
         paths = self._paths_at(pane, pos)
-        act_copy = pane.act_copy_path
-        act_copy.setText(self._copy_menu_text(paths))
+        act_copy = menu.addAction(self._copy_menu_text(paths))
         # 远端没连上时列表是空的，没路径可复制
-        act_copy.setEnabled(not (pane is self.remote_pane and self.session is None))
-        menu.addAction(act_copy)
+        act_copy.setEnabled(connected)
+        # 用菜单弹出前算好的 paths：右键点中未选中的行时，复制的是那一行，
+        # 不是上一次残留的多选
+        act_copy.triggered.connect(lambda: self.copy_paths(paths))
+
         # 预览：菜单弹出前先定好对象，避免菜单开着时选择被改掉
         target = self._preview_target(pane, pos)
         act_preview = menu.addAction("预览")
         act_preview.setEnabled(target is not None and not target.is_dir)
+        act_preview.triggered.connect(lambda: self.preview_entry(pane, target))
         menu.addSeparator()
 
+        # 上传 / 下载 / 新建 / 重命名 / 删除仍按原样可点：内部自己会提示
+        # "请先连接服务器"，不在菜单里提前替它们决定
         act_upload = menu.addAction("上传到远端")
-        act_download = menu.addAction("下载到本地")
-        menu.addSeparator()
-        act_newdir = menu.addAction("新建目录")
-        act_rename = menu.addAction("重命名")
-        act_delete = menu.addAction("删除")
-        menu.addSeparator()
-        act_bookmark = menu.addAction("收藏当前目录为书签…")
-        act_open_bm = menu.addAction("打开书签…")
-        menu.addSeparator()
-        act_open_local = menu.addAction("用文件管理器打开")
-
         act_upload.setVisible(pane is self.local_pane)
+        act_upload.triggered.connect(self.on_upload)
+
+        act_download = menu.addAction("下载到本地")
         act_download.setVisible(pane is self.remote_pane)
+        act_download.triggered.connect(self.on_download)
+        menu.addSeparator()
+
+        act_newdir = menu.addAction("新建目录")
+        act_newdir.triggered.connect(self.on_newdir)
+
+        act_rename = menu.addAction("重命名")
+        act_rename.triggered.connect(self.on_rename)
+
+        act_delete = menu.addAction("删除")
+        act_delete.triggered.connect(self.on_delete)
+        menu.addSeparator()
+
+        act_bookmark = menu.addAction("收藏当前目录为书签…")
+        act_bookmark.triggered.connect(lambda: self.add_bookmark(side))
+
+        act_open_bm = menu.addAction("打开书签…")
+        act_open_bm.triggered.connect(self.on_bookmarks)
+        menu.addSeparator()
+
+        act_open_local = menu.addAction("用文件管理器打开")
         act_open_local.setVisible(pane is self.local_pane)
+        act_open_local.triggered.connect(lambda: self._open_in_file_manager(pane))
+        return menu
 
-        chosen = menu.exec(pane.view.viewport().mapToGlobal(pos))
-        if chosen is act_copy:
-            # 用菜单弹出前算好的 paths：右键点中未选中的行时，复制的是那一行
-            self.copy_paths(paths)
-        elif chosen is act_preview:
-            self.preview_entry(pane, target)
-        elif chosen is act_upload:
-            self.on_upload()
-        elif chosen is act_download:
-            self.on_download()
-        elif chosen is act_newdir:
-            self.on_newdir()
-        elif chosen is act_rename:
-            self.on_rename()
-        elif chosen is act_delete:
-            self.on_delete()
-        elif chosen is act_bookmark:
-            self.add_bookmark(side)
-        elif chosen is act_open_bm:
-            self.on_bookmarks()
-        elif chosen is act_open_local:
-            entry = pane.current_entry()
-            if entry:
-                import subprocess
+    def _open_in_file_manager(self, pane: FilePane) -> None:
+        """本地面板：目录就开它本身，文件就开它所在目录。"""
+        entry = pane.current_entry()
+        if entry is None:
+            target = pane.current_dir
+        else:
+            target = entry.path if entry.is_dir else os.path.dirname(entry.path)
+        if target:
+            subprocess.Popen(["xdg-open", target])
 
-                subprocess.Popen(["xdg-open", entry.path if entry.is_dir
-                                  else os.path.dirname(entry.path)])
+    def _on_context_menu(self, pane: FilePane, pos) -> None:
+        menu = self.build_context_menu(pane, pos)
+        menu.exec(pane.view.viewport().mapToGlobal(pos))
+        # 每次右键都新建菜单，用完得回收，否则一长串挂在主窗口底下
+        menu.deleteLater()
 
     # ------------------------------------------------------------ 站点
     def on_sites(self) -> None:
