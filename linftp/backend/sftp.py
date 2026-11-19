@@ -381,3 +381,14 @@ class SftpBackend(FtpSession):
 
         if progress:
             progress(total, total)
+
+    def read_head(self, remote: str, limit: int) -> bytes:
+        """只取文件头部（预览用）。SFTP 有真正的随机读，读够就停。"""
+        sftp = self._chk()
+        rp = self._abs(remote)
+        try:
+            with sftp.open(rp, "rb") as rf:
+                return rf.read(limit)
+        except IOError as e:
+            raise SessionError(f"读取远端文件失败 {rp}：{e}") from e
+

@@ -704,6 +704,17 @@ QTableCornerButton::section {{
 /* 表格底部留一点内缩，让最后一行不顶到圆角边框上 */
 QTableView {{ padding-bottom: 2px; }}
 
+/* ---------- 只读文本（预览窗口） ---------- */
+QPlainTextEdit {{
+    background: {p.SURFACE};
+    border: 1px solid {p.BORDER};
+    border-radius: 8px;
+    padding: 8px 10px;
+    color: {p.TEXT};
+    selection-background-color: {p.PRIMARY_SOFT};
+    selection-color: {p.TEXT};
+}}
+
 /* ---------- 滚动条 ---------- */
 QScrollBar:vertical {{
     background: transparent;

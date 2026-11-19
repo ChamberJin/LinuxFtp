@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import os
 import stat as stat_mod
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -164,6 +165,27 @@ class FtpSession(ABC):
         progress: Optional[ProgressCb] = None,
         cancel_flag: Optional[CancelCb] = None,
     ) -> None: ...
+
+    def read_head(self, remote: str, limit: int) -> bytes:
+        """只读文件头部 limit 字节，用于预览。
+
+        默认实现是整份下载再截断——宁可慢也别乱给数据；能随机读的协议
+        （FTP 的 REST / SFTP 的 seek）都会覆盖它，避免为了看一眼日志
+        把几百兆全拉下来。
+        """
+        import tempfile
+
+        fd, tmp = tempfile.mkstemp(prefix="linftp-head-")
+        os.close(fd)
+        try:
+            self.get(remote, tmp)
+            with open(tmp, "rb") as f:
+                return f.read(limit)
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
     def supports_resume(self) -> bool:
         return True

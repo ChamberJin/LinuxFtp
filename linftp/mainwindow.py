@@ -15,7 +15,14 @@ import json
 import logging
 import os
 
-from PySide6.QtCore import QRect, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import (
+    QItemSelectionModel,
+    QRect,
+    QSize,
+    QTimer,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -61,6 +68,7 @@ from .models import (
     human_size,
 )
 from .pathbar import PathEdit
+from .preview import PreviewDialog
 from .queue import TaskState, TransferQueue
 from .sites import SiteStore
 from .theme import Palette
@@ -241,6 +249,14 @@ class FilePane(QWidget):
         self.view.verticalHeader().setVisible(False)
         self.view.horizontalHeader().setStretchLastSection(False)
         self.view.horizontalHeader().setHighlightSections(False)
+        # 排序由面板自己接管（不用 setSortingEnabled(True)）：Qt 自带那套
+        # 在排序时会把选择清掉，这里要保住用户选中的行。
+        hdr = self.view.horizontalHeader()
+        hdr.setSectionsClickable(True)
+        hdr.setSortIndicatorShown(True)
+        hdr.setSortIndicator(self.model.sort_column(), self.model.sort_order())
+        hdr.setToolTip("点击表头排序，再点一次切换升降序（目录始终在最前）")
+        hdr.sectionClicked.connect(self._on_header_clicked)
         # 名称列固定宽度：用 Interactive 而不是 Stretch，
         # 否则列宽会随最长文件名自适应，切换目录时宽度跳动、观感割裂。
         # 名称列只吃掉"面板富余空间"，不跟随文件名内容变化（见 _fit_columns）。
@@ -345,10 +361,43 @@ class FilePane(QWidget):
         return [self.current_dir] if self.current_dir else []
 
     def set_entries(self, entries) -> None:
-        self.model.set_filter("")
+        # 不过滤清零：用户填的过滤词在切目录后继续生效，和输入框保持一致
         self.model.set_entries(entries)
         self.count_label.setText(f"{self.model.rowCount()} 项")
         self._fit_columns()
+
+    # -------------------------------------------------------- 排序
+    def _on_header_clicked(self, column: int) -> None:
+        """同列再点反转，换列回到升序。"""
+        if column == self.model.sort_column():
+            order = (Qt.DescendingOrder
+                     if self.model.sort_order() == Qt.AscendingOrder
+                     else Qt.AscendingOrder)
+        else:
+            order = Qt.AscendingOrder
+        self.apply_sort(column, order)
+
+    def apply_sort(self, column: int, order) -> None:
+        """改排序，并保住原来的选中行与当前行。"""
+        keep_sel = [e.path for e in self.selected_entries()]
+        keep_cur = self.current_entry()
+        self.model.sort(column, order)
+        self.view.horizontalHeader().setSortIndicator(column, order)
+        self._restore_selection(keep_sel, keep_cur.path if keep_cur else "")
+
+    def _restore_selection(self, paths, current_path: str) -> None:
+        rows_by_path = {e.path: i for i, e in enumerate(self.model.entries())}
+        sm = self.view.selectionModel()
+        sm.clearSelection()
+        for path in paths:
+            row = rows_by_path.get(path)
+            if row is None:          # 该行被过滤掉了，跳过
+                continue
+            sm.select(self.model.index(row, 0),
+                      QItemSelectionModel.Select | QItemSelectionModel.Rows)
+        row = rows_by_path.get(current_path)
+        if row is not None:
+            self.view.setCurrentIndex(self.model.index(row, 0))
 
     def _fit_columns(self) -> None:
         """名称列宽度只跟面板宽度走，跟文件名内容无关。
@@ -1010,12 +1059,36 @@ class MainWindow(QMainWindow):
             self.go_remote(self.remote_path)
 
     def _on_pane_activated(self, pane: FilePane, entry: RemoteFile) -> None:
-        if not entry.is_dir:
+        if entry.is_dir:
+            if pane is self.local_pane:
+                self.go_local(entry.path)
+            else:
+                self.go_remote(entry.path)
             return
-        if pane is self.local_pane:
-            self.go_local(entry.path)
-        else:
-            self.go_remote(entry.path)
+        # 双击文件直接开预览：看日志 / 改配置前先瞄一眼是最高频的动作
+        self.preview_entry(pane, entry)
+
+    # ------------------------------------------------------------ 预览
+    def preview_entry(self, pane: FilePane, entry: RemoteFile) -> None:
+        """打开只读预览窗口。远端只读文件头，不会整份下载。"""
+        if entry is None or entry.is_dir:
+            return
+        is_local = pane is self.local_pane
+        if not is_local and not self.session:
+            QMessageBox.information(self, "提示", "请先连接服务器")
+            return
+        dlg = PreviewDialog(self)
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        dlg.preview(
+            name=entry.name,
+            path=entry.path,
+            size=entry.size,
+            mtime=entry.mtime,
+            cfg=None if is_local else self.cfg,
+            local_path=entry.path if is_local else "",
+        )
+        theme.center_on_parent(dlg, self)
+        dlg.show()
 
     def navigate_to(self, pane: FilePane, path: str) -> None:
         """路径栏点了某一层：按面板所在侧跳过去。"""
@@ -1276,6 +1349,14 @@ class MainWindow(QMainWindow):
             return picked
         return [pane.current_dir] if pane.current_dir else []
 
+    def _preview_target(self, pane: FilePane, pos):
+        """右键位置要预览的条目；点多行或没选中时返回 None。"""
+        idx = pane.view.indexAt(pos)
+        if idx.isValid():
+            return pane.model.entry_at(idx.row())
+        picked = pane.selected_entries()
+        return picked[0] if len(picked) == 1 else None
+
     def copy_paths(self, paths) -> None:
         """把若干路径写进剪贴板（多条按行分隔）。"""
         paths = [p for p in dict.fromkeys(paths) if p]
@@ -1313,6 +1394,10 @@ class MainWindow(QMainWindow):
         # 远端没连上时列表是空的，没路径可复制
         act_copy.setEnabled(not (pane is self.remote_pane and self.session is None))
         menu.addAction(act_copy)
+        # 预览：菜单弹出前先定好对象，避免菜单开着时选择被改掉
+        target = self._preview_target(pane, pos)
+        act_preview = menu.addAction("预览")
+        act_preview.setEnabled(target is not None and not target.is_dir)
         menu.addSeparator()
 
         act_upload = menu.addAction("上传到远端")
@@ -1335,6 +1420,8 @@ class MainWindow(QMainWindow):
         if chosen is act_copy:
             # 用菜单弹出前算好的 paths：右键点中未选中的行时，复制的是那一行
             self.copy_paths(paths)
+        elif chosen is act_preview:
+            self.preview_entry(pane, target)
         elif chosen is act_upload:
             self.on_upload()
         elif chosen is act_download:

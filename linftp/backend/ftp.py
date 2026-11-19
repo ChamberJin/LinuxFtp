@@ -693,6 +693,41 @@ class FtpBackend(FtpSession):
         if progress:
             progress(total, total)
 
+    def read_head(self, remote: str, limit: int) -> bytes:
+        """只取文件头部（预览用）。
+
+        FTP 没有"读前 N 字节"的命令，只能发 RETR 收到够数就主动中止。
+        中止后数据通道没传输完，这条控制连接已经不可靠了 —— 所以这里
+        直接关掉它，调用方应当把这个会话当一次性的用（预览就是新建一个）。
+        """
+        ftp = self._chk()
+        remote_path = self._abs(remote)
+        buf = bytearray()
+
+        class _Enough(Exception):
+            """收到够多数据，中断传输。"""
+
+        def _cb(data: bytes) -> None:
+            buf.extend(data)
+            if len(buf) >= limit:
+                raise _Enough()
+
+        try:
+            ftp.retrbinary(f"RETR {remote_path}", _cb)
+        except _Enough:
+            pass
+        except ftplib.error_perm as e:
+            if not buf:
+                raise SessionError(f"读取失败 {remote_path}：{e}") from e
+        except ftplib.all_errors as e:
+            if not buf:
+                raise SessionError(f"读取中断 {remote_path}：{e}") from e
+
+        out = bytes(buf[:limit])
+        if len(buf) >= limit:
+            self.close()
+        return out
+
 
 def _join(parent: str, name: str) -> str:
     p = parent.rstrip("/")

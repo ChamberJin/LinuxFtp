@@ -90,6 +90,14 @@ def _clip() -> str:
     return QApplication.clipboard().text()
 
 
+def _row_of(pane, name: str) -> int:
+    """按文件名找行号——行序由排序决定，不能写死。"""
+    for i, e in enumerate(pane.model.entries()):
+        if e.name == name:
+            return i
+    raise AssertionError(f"列表里没有 {name}")
+
+
 def _row_pos(pane, row: int) -> QPoint:
     """某一行的可视中心（用来模拟右键落点）。"""
     rect = pane.view.visualRect(pane.model.index(row, 0))
@@ -110,7 +118,7 @@ def test_no_selection_copies_current_dir() -> None:
 def test_single_selection_copies_entry_path() -> None:
     """选中一项 → 复制该项的绝对路径。"""
     _win, pane, app = _window_and_pane()
-    pane.view.selectRow(0)
+    pane.view.selectRow(_row_of(pane, "app.log"))
     app.processEvents()
     QApplication.clipboard().setText("")
     _win.copy_path(pane)
@@ -135,7 +143,9 @@ def test_multi_selection_one_line_each() -> None:
     QApplication.clipboard().setText("")
     _win.copy_path(pane)
     app.processEvents()
-    assert _clip() == "/srv/app/app.log\n/srv/app/conf\n/srv/app/run.sh", repr(_clip())
+    # 期望值跟着列表实际顺序走（列表按名称排序），关键是不串行、不少行
+    order = [e.path for e in pane.model.entries()]
+    assert _clip() == "\n".join(order), repr(_clip())
 
 
 def test_duplicates_and_empties_dropped() -> None:
@@ -159,19 +169,20 @@ def test_empty_paths_leave_clipboard_alone() -> None:
 def test_right_click_on_unselected_row_wins() -> None:
     """右键点在未选中的行上，复制的是那一行，不是残留的多选。"""
     _win, pane, app = _window_and_pane()
-    pane.view.selectRow(0)
+    pane.view.selectRow(_row_of(pane, "app.log"))
     app.processEvents()
-    paths = _win._paths_at(pane, _row_pos(pane, 2))
+    paths = _win._paths_at(pane, _row_pos(pane, _row_of(pane, "run.sh")))
     assert paths == ["/srv/app/run.sh"], paths
 
 
 def test_right_click_inside_selection_keeps_all() -> None:
     """右键点已在选中集合里的行，仍然复制整个选择。"""
     _win, pane, app = _window_and_pane()
-    _select_rows(pane, 1, 2)
+    r1, r2 = _row_of(pane, "app.log"), _row_of(pane, "run.sh")
+    _select_rows(pane, min(r1, r2), max(r1, r2))
     app.processEvents()
-    paths = _win._paths_at(pane, _row_pos(pane, 2))
-    assert paths == ["/srv/app/conf", "/srv/app/run.sh"], paths
+    paths = _win._paths_at(pane, _row_pos(pane, r2))
+    assert paths == ["/srv/app/app.log", "/srv/app/run.sh"], paths
 
 
 def test_right_click_on_blank_falls_back() -> None:
@@ -181,7 +192,7 @@ def test_right_click_on_blank_falls_back() -> None:
     assert not pane.view.indexAt(blank).isValid(), "落点算错了，那里确实有行"
 
     assert _win._paths_at(pane, blank) == ["/srv/app"]
-    pane.view.selectRow(0)
+    pane.view.selectRow(_row_of(pane, "app.log"))
     app.processEvents()
     assert _win._paths_at(pane, blank) == ["/srv/app/app.log"]
 
@@ -209,7 +220,7 @@ def test_shortcut_action() -> None:
 def test_signal_reaches_clipboard() -> None:
     """菜单项和快捷键都走同一条链路：面板发信号 → 主窗口写剪贴板。"""
     _win, pane, app = _window_and_pane()
-    pane.view.selectRow(2)
+    pane.view.selectRow(_row_of(pane, "run.sh"))
     app.processEvents()
     QApplication.clipboard().setText("")
     pane.copy_path_requested.emit(pane)      # act_copy_path 的槽就是这么发的
@@ -231,7 +242,7 @@ def test_status_hint_shows_up() -> None:
     所以这里跑完 processEvents 仍能看到消息，才说明没被清。
     """
     _win, pane, app = _window_and_pane()
-    pane.view.selectRow(0)
+    pane.view.selectRow(_row_of(pane, "app.log"))
     app.processEvents()
     _win.copy_path(pane)
     app.processEvents()
