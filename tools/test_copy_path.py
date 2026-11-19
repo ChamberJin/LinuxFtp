@@ -28,6 +28,8 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# 用例里没人点"收进托盘"，真托盘一律不起，免得关窗口时弹出询问框卡住
+os.environ["LINFP_NO_TRAY"] = "1"
 # 必须在 import linftp.sites 之前设好：CONFIG_DIR 是导入时求值的
 _CONF = tempfile.mkdtemp(prefix="linftp-copypath-")
 os.environ["LINFP_CONF_DIR"] = _CONF

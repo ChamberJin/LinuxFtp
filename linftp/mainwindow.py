@@ -72,6 +72,15 @@ from .preview import PreviewDialog
 from .queue import TaskState, TransferQueue
 from .sites import SiteStore
 from .theme import Palette
+from .tray import (
+    CLOSE_ASK,
+    CLOSE_CANCEL,
+    CLOSE_TRAY,
+    TrayIcon,
+    ask_close_action,
+    normalize_close_pref,
+    resolve_close_action,
+)
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +125,20 @@ def load_compact_pref() -> bool:
 def save_compact_pref(compact: bool) -> None:
     data = load_prefs()
     data["compact"] = bool(compact)
+    _save_prefs(data)
+
+
+def load_close_pref() -> str:
+    """读上次选的关闭动作：ask（每次问）/ tray（收进托盘）/ quit（退出）。
+
+    没存过、存坏了都当 ask —— 问一句总比悄悄退出、或者悄悄消失强。
+    """
+    return normalize_close_pref(load_prefs().get("close_action"))
+
+
+def save_close_pref(action: str) -> None:
+    data = load_prefs()
+    data["close_action"] = normalize_close_pref(action)
     _save_prefs(data)
 
 
@@ -433,6 +456,9 @@ class FilePane(QWidget):
 
 
 class MainWindow(QMainWindow):
+    # 传输队列在工作线程里回调，先转成信号派回 GUI 线程再动界面
+    task_updated = Signal(object)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("LinFTP —— Linux 上的 FTP 客户端")
@@ -450,13 +476,22 @@ class MainWindow(QMainWindow):
         self.remote_path = "/"
 
         self.queue = TransferQueue(lambda: self.cfg, max_workers=2)
-        self.queue.add_listener(self._on_task_update)
+        # 直接 connect 回调会在工作线程里刷队列表格、弹托盘气泡 ——
+        # Qt 的界面对象只能在自己的线程里碰，绕一层信号让它排队回到主线程
+        self.task_updated.connect(self._on_task_update)
+        self.queue.add_listener(self.task_updated.emit)
 
         self._build_toolbar()
         self._build_body()
         self._build_queue_panel()
         self._build_log_panel()
         self._build_statusbar()
+
+        # True 表示"这次真的要退出"：托盘菜单点退出时置位，
+        # closeEvent 见到它就不再问要不要收进托盘
+        self._quitting = False
+        self.tray: TrayIcon | None = None
+        self._setup_tray()
 
         # 定时保活，防止服务端空闲断连
         self._keepalive = QTimer(self)
@@ -860,6 +895,7 @@ class MainWindow(QMainWindow):
         self.conn_dot.setStyleSheet(f"color: {color}; font-size: {dot}px;")
         self.status_label.setStyleSheet(
             f"color: {Palette.TEXT if connected else Palette.TEXT_MUTED};")
+        self._sync_tray()
 
     # ------------------------------------------------------------ 日志
     def add_log(self, message: str, level: str = "INFO") -> None:
@@ -1222,6 +1258,28 @@ class MainWindow(QMainWindow):
 
         if task.state in (TaskState.DONE, TaskState.FAILED, TaskState.CANCELLED):
             self._finish_task(task)
+            self._notify_tray_result(task)
+        self._sync_tray()
+
+    def _notify_tray_result(self, task) -> None:
+        """窗口收在托盘里时，用系统通知告知传输结果。
+
+        只在队列彻底空下来时提示一次 —— 一次拖 50 个文件，逐个弹气泡
+        会把人烦死；关在托盘里的人只需要知道"跑完了没有"。
+        """
+        if self.tray is None or self.isVisible():
+            return
+        tasks = self.queue.tasks()
+        if any(t.state in (TaskState.RUNNING, TaskState.QUEUED) for t in tasks):
+            return
+        done = sum(1 for t in tasks if t.state == TaskState.DONE)
+        failed = [t for t in tasks if t.state == TaskState.FAILED]
+        if failed:
+            self.tray.notify(
+                "有任务失败",
+                f"完成 {done} 个，失败 {len(failed)} 个（如 {failed[0].name}）")
+        elif done and task.state == TaskState.DONE:
+            self.tray.notify("传输完成", f"{done} 个任务已全部完成")
 
     def _sync_queue_tree(self) -> None:
         tasks = self.queue.tasks()
@@ -1736,26 +1794,146 @@ class MainWindow(QMainWindow):
             self.setWindowState(self.windowState() | Qt.WindowMaximized)
         return True
 
-    def closeEvent(self, event) -> None:
-        running = [t for t in self.queue.tasks()
-                   if t.state in (TaskState.RUNNING, TaskState.QUEUED)]
-        if running:
-            ret = QMessageBox.question(
-                self, "仍有传输任务",
-                f"还有 {len(running)} 个任务未完成，确定退出吗？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if ret != QMessageBox.Yes:
-                event.ignore()
-                return
-        # 关掉之前把窗口状态记下来。放在 accept() 之前，此时窗口还在、
-        # normalGeometry() 还有效；写在 destroy 之后就拿不到了。
+    # ------------------------------------------------------------ 托盘 / 关闭
+    def _setup_tray(self) -> None:
+        """建系统托盘。拿不到托盘就退回老规矩：关窗口即退出。"""
+        if not TrayIcon.available():
+            log.info("系统托盘不可用，关闭窗口将直接退出")
+            return
+
+        self.tray = TrayIcon(self)
+        self.tray.show_window_requested.connect(self.show_from_tray)
+        self.tray.disconnect_requested.connect(self.on_disconnect)
+        self.tray.quit_requested.connect(self.quit_from_tray)
+        self.tray.close_tray_pref_changed.connect(self._on_close_tray_pref_changed)
+        self.tray.set_close_tray_pref(load_close_pref() == CLOSE_TRAY)
+        self.tray.show()
+
+        # 收进托盘后一个窗口都不剩，Qt 默认会顺手把程序退掉，
+        # 那“常驻托盘”就成了一句空话。关掉这条默认行为后，退出只剩两个入口：
+        # closeEvent 里用户明确选“退出程序”，或托盘菜单的“退出”。
+        app = QApplication.instance()
+        if app is not None:
+            app.setQuitOnLastWindowClosed(False)
+
+        self._sync_tray()
+
+    def _sync_tray(self) -> None:
+        """把连接状态、传输中任务数刷到托盘上。"""
+        tray = getattr(self, "tray", None)
+        label = getattr(self, "status_label", None)
+        if tray is None or label is None:
+            return
+        tray.set_status(label.text(), self.session is not None,
+                        self._running_count())
+
+    def _running_count(self) -> int:
+        """还没结束的任务数（传输中 + 排队中）。"""
+        return sum(1 for t in self.queue.tasks()
+                   if t.state in (TaskState.RUNNING, TaskState.QUEUED))
+
+    def _on_close_tray_pref_changed(self, on: bool) -> None:
+        save_close_pref(CLOSE_TRAY if on else CLOSE_ASK)
+        tip = ("关闭窗口时收进托盘" if on else "关闭窗口时先询问要托盘还是退出")
+        # 菜单关闭时会给主窗口发一个空 StatusTip，把刚写进去的提示清掉，
+        # 所以压到下一帧再写
+        QTimer.singleShot(0, lambda: self.statusBar().showMessage(tip, 2500))
+
+    def show_from_tray(self) -> None:
+        """从托盘把主窗口叫回来。最小化过就先还原，再抬到最前。"""
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def hide_to_tray(self) -> None:
+        """收进托盘：藏起窗口，进程、定时器、传输队列都留着。"""
+        # 窗口藏起来以后就拿不到 geometry 了，先记一份；
+        # 不然"收进托盘 → 从托盘退出"这条路上位置会丢
         save_window_geometry(self)
+        self.hide()
+        if self.tray is not None:
+            running = self._running_count()
+            body = "程序仍在后台运行，点击托盘图标可重新打开。"
+            if running:
+                body = (f"{running} 个传输任务在后台继续。"
+                        "点击托盘图标可重新打开窗口。")
+            self.tray.notify("LinFTP 已收进托盘", body)
+        self._sync_tray()
+
+    def quit_from_tray(self) -> None:
+        """从托盘菜单退出。
+
+        有任务没完成时 closeEvent 会弹确认框，父窗口藏在托盘里是看不见的，
+        所以先把窗口叫回来，再走正常的关闭流程。
+        """
+        self._quitting = True
+        self.show_from_tray()
+        self.close()
+
+    def _confirm_quit_with_tasks(self, running: int) -> bool:
+        """还有任务在跑时，退出前再问一遍。"""
+        if running <= 0:
+            return True
+        ret = QMessageBox.question(
+            self, "仍有传输任务",
+            f"还有 {running} 个任务未完成，确定退出吗？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return ret == QMessageBox.Yes
+
+    def _teardown(self) -> None:
+        """真正退出前的收尾：记窗口状态、摘托盘、停后台。"""
+        # 放在 accept() 之前：此时窗口还在、normalGeometry() 还有效；
+        # 写在 destroy 之后就拿不到了。
+        save_window_geometry(self)
+        if self.tray is not None:
+            # 不摘掉的话，进程没了托盘里还会留个点不动的空图标
+            self.tray.hide()
+        self._keepalive.stop()
         self.queue.shutdown()
         if self.session:
             try:
                 self.session.close()
             except Exception:
                 pass
+
+    def closeEvent(self, event) -> None:
+        running = self._running_count()
+
+        # 明确要退出（托盘菜单点的 / 上一轮已经问过了）：不再提托盘
+        if self._quitting:
+            if not self._confirm_quit_with_tasks(running):
+                self._quitting = False      # 用户反悔，窗口留着
+                event.ignore()
+                return
+            self._teardown()
+            event.accept()
+            return
+
+        action = resolve_close_action(load_close_pref(), self.tray is not None)
+
+        if action == CLOSE_ASK:
+            choice, remember = ask_close_action(self, running)
+            if choice == CLOSE_CANCEL:
+                event.ignore()
+                return
+            if remember:
+                save_close_pref(choice)
+                if self.tray is not None:
+                    self.tray.set_close_tray_pref(choice == CLOSE_TRAY)
+            action = choice
+
+        if action == CLOSE_TRAY:
+            self.hide_to_tray()
+            event.ignore()      # 窗口没关，只是藏起来了
+            return
+
+        if not self._confirm_quit_with_tasks(running):
+            event.ignore()
+            return
+        self._teardown()
         event.accept()
 
 

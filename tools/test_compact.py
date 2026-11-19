@@ -18,6 +18,8 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# 用例里没人点"收进托盘"，真托盘一律不起，免得关窗口时弹出询问框卡住
+os.environ["LINFP_NO_TRAY"] = "1"
 
 passed = failed = 0
 
