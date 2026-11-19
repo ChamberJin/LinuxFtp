@@ -22,6 +22,9 @@ sites.json
 tools/testserver.py
 tools/test_sftp.py
 
+# 开发计划流水（本地保留，不入库）
+DEVLOG.md
+
 # 打包产物与中间文件
 build/
 dist/
